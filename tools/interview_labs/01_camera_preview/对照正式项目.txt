@@ -1,0 +1,43 @@
+/*
+ * 对照阅读：正式项目里「预览采集」落在哪
+ * 打开：src/views/attendanceclockview.cpp
+ *
+ * 建议你一边开 01_preview.cpp，一边开下面函数，用搜索跳转。
+ */
+
+#if 0  /* 本文件不能编译，只作注释地图 */
+
+void AttendanceClockView::startCamera()
+{
+    // 【对应实验步骤1】打开设备；失败则尝试 9,10,1,2,11
+    m_cap.open(m_cameraIndex);
+    // ... fallbacks ...
+
+    // 【对应实验步骤2】参数：和 lab 几乎一样
+    m_cap.set(CAP_PROP_FOURCC, MJPG);
+    m_cap.set(CAP_PROP_FRAME_WIDTH, 320);
+    m_cap.set(CAP_PROP_FRAME_HEIGHT, 240);
+    m_cap.set(CAP_PROP_FPS, 15);
+    m_cap.set(CAP_PROP_BUFFERSIZE, 1);
+
+    // 【难点】两个定时器：
+    //   m_timer ~33ms  → updateFrame()   只负责「能看」
+    //   m_recognizeTimer ~200ms → 识别/活体  「能认」
+    m_timer->start(33);
+    m_recognizeTimer->start(200);
+}
+
+void AttendanceClockView::stopCamera()
+{
+    // 【易错点】不 release，FaceCaptureDialog 采集会失败
+    m_cap.release();
+}
+
+void AttendanceClockView::updateFrame()
+{
+    // 【对应实验 while 循环里的 read + 显示】
+    // 读帧 → 转 QImage → 显示到 QLabel
+    // 这里一般不做重识别，避免预览卡死
+}
+
+#endif

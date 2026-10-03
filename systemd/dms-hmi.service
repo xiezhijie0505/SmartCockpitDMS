@@ -1,0 +1,24 @@
+[Unit]
+Description=DMS HMI (SmartCockpitDMS, listens fatigue socket + reads shm)
+After=dms-capture.service
+Requires=dms-capture.service
+# HMI 先于 AI 起来，才能听 /tmp/dms_fatigue.sock
+
+[Service]
+Type=simple
+WorkingDirectory=/root/SmartCockpitDMS
+Environment=LD_LIBRARY_PATH=/root/SmartCockpitDMS/lib
+Environment=QT_PLUGIN_PATH=/root/SmartCockpitDMS/plugins
+Environment=QT_QPA_PLATFORM_PLUGIN_PATH=/root/SmartCockpitDMS/plugins/platforms
+Environment=QT_QPA_PLATFORM=linuxfb
+Environment=QT_QPA_FONTDIR=/usr/share/fonts
+Environment=TZ=CST-8
+ExecStartPre=-/bin/sh -c "amixer sset 'Playback Path' SPK >/dev/null 2>&1 || true"
+ExecStart=/root/SmartCockpitDMS/SmartCockpitDMS
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

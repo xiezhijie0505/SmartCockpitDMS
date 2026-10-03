@@ -1,0 +1,98 @@
+#!/bin/sh
+# DMS 三进程拉起（SysV / Buildroot 风格）
+# 安装到: /etc/init.d/S90dms
+# 开机由 rcS 按 S 序号自动执行
+
+APP_ROOT="${APP_ROOT:-/root/SmartCockpitDMS}"
+export LD_LIBRARY_PATH="$APP_ROOT/lib:${LD_LIBRARY_PATH:-}"
+export QT_PLUGIN_PATH="$APP_ROOT/plugins"
+export QT_QPA_PLATFORM_PLUGIN_PATH="$APP_ROOT/plugins/platforms"
+export QT_QPA_PLATFORM="${FORCE_QT_QPA_PLATFORM:-linuxfb}"
+export QT_QPA_FONTDIR="${QT_QPA_FONTDIR:-/usr/share/fonts}"
+export TZ="${TZ:-CST-8}"
+
+LOG_DIR=/tmp/dms_logs
+mkdir -p "$LOG_DIR"
+
+start_one() {
+  name="$1"
+  shift
+  if pidof "$name" >/dev/null 2>&1; then
+    echo "$name already running"
+    return 0
+  fi
+  echo "starting $name ..."
+  (
+    cd "$APP_ROOT" || exit 1
+    "$@" >>"$LOG_DIR/$name.log" 2>&1 &
+  )
+}
+
+stop_one() {
+  name="$1"
+  if pidof "$name" >/dev/null 2>&1; then
+    killall "$name" 2>/dev/null
+    sleep 1
+    killall -9 "$name" 2>/dev/null
+  fi
+}
+
+start() {
+  amixer sset 'Playback Path' SPK >/dev/null 2>&1 || true
+  start_one dms_capture ./dms_capture
+  sleep 1
+  start_one SmartCockpitDMS ./SmartCockpitDMS
+  sleep 1
+  start_one dms_ai ./dms_ai "$APP_ROOT/models/rknn/yolov8_pose.rknn"
+  # 后台守护：挂了自动拉起（等价 systemd Restart=on-failure）
+  if [ -f "$LOG_DIR/watchdog.pid" ]; then
+    old=$(cat "$LOG_DIR/watchdog.pid" 2>/dev/null)
+    if [ -n "$old" ] && kill -0 "$old" 2>/dev/null; then
+      echo "watchdog already running pid=$old"
+    else
+      "$APP_ROOT/systemd/dms_watchdog.sh" >>"$LOG_DIR/watchdog.log" 2>&1 &
+    fi
+  else
+    "$APP_ROOT/systemd/dms_watchdog.sh" >>"$LOG_DIR/watchdog.log" 2>&1 &
+  fi
+  echo "DMS started. logs: $LOG_DIR"
+}
+
+stop() {
+  if [ -f "$LOG_DIR/watchdog.pid" ]; then
+    kill "$(cat "$LOG_DIR/watchdog.pid")" 2>/dev/null
+    rm -f "$LOG_DIR/watchdog.pid"
+  fi
+  killall dms_watchdog 2>/dev/null
+  stop_one dms_ai
+  stop_one SmartCockpitDMS
+  stop_one dms_capture
+  echo "DMS stopped"
+}
+
+status() {
+  for n in dms_capture SmartCockpitDMS dms_ai; do
+    if pidof "$n" >/dev/null 2>&1; then
+      echo "$n: running pid=$(pidof "$n")"
+    else
+      echo "$n: stopped"
+    fi
+  done
+  if [ -f "$LOG_DIR/watchdog.pid" ] && kill -0 "$(cat "$LOG_DIR/watchdog.pid")" 2>/dev/null; then
+    echo "watchdog: running pid=$(cat "$LOG_DIR/watchdog.pid")"
+  else
+    echo "watchdog: stopped"
+  fi
+}
+
+case "$1" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; sleep 1; start ;;
+  status) status ;;
+  *)
+    echo "Usage: $0 {start|stop|restart|status}"
+    exit 1
+    ;;
+esac
+exit 0

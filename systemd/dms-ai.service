@@ -1,0 +1,18 @@
+[Unit]
+Description=DMS AI (read shm -> pose -> Unix socket fatigue event)
+After=dms-capture.service dms-hmi.service
+Requires=dms-capture.service
+# 依赖采集；建议 HMI 已在听 socket（After hmi）
+
+[Service]
+Type=simple
+WorkingDirectory=/root/SmartCockpitDMS
+Environment=LD_LIBRARY_PATH=/root/SmartCockpitDMS/lib
+ExecStart=/root/SmartCockpitDMS/dms_ai /root/SmartCockpitDMS/models/rknn/yolov8_pose.rknn
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

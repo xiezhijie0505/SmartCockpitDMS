@@ -1,0 +1,18 @@
+[Unit]
+Description=DMS capture (V4L2 -> shared memory)
+After=local-fs.target
+# 采集最先起，给 AI/HMI 提供 /dms_frame_shm
+
+[Service]
+Type=simple
+WorkingDirectory=/root/SmartCockpitDMS
+Environment=LD_LIBRARY_PATH=/root/SmartCockpitDMS/lib
+ExecStart=/root/SmartCockpitDMS/dms_capture
+Restart=on-failure
+RestartSec=2
+# 方便 journalctl 看日志
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

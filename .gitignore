@@ -1,0 +1,54 @@
+# Qt / qmake
+*.pro.user
+*.pro.user.*
+*.autosave
+*.qmake.stash
+.qmake.stash
+Makefile*
+moc_*.cpp
+moc_*.h
+ui_*.h
+qrc_*.cpp
+object_script.*
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.so
+*.so.*
+*.dylib
+*.exe
+*.app
+
+# 本地/交叉编译产物
+build/
+build-*/
+deploy/
+*.aarch64
+
+# 同步包、临时文件
+*.tgz
+*.tar.gz
+*.zip
+*.log
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# 运行数据
+data/*.db
+data/*.db-journal
+
+# 大体积依赖默认不进库（Release 附件或自行下载）
+models/**/*.rknn
+models/**/*.onnx
+models/**/*.csta
+3rdparty/seetaface/lib/
+3rdparty/seetaface/bin/
+3rdparty/rknn/lib/
