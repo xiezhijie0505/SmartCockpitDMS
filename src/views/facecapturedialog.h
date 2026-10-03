@@ -10,7 +10,6 @@
 #include <opencv2/opencv.hpp>
 
 class FaceRecognizer;
-class FrameShmReader;
 
 class FaceCaptureDialog : public QDialog
 {
@@ -39,8 +38,6 @@ private:
     QPushButton *m_cancelBtn = nullptr;
     QTimer *m_timer = nullptr;
 
-    FrameShmReader *m_shmReader = nullptr;
-    bool m_useShm = false;
     cv::VideoCapture m_cap;
     cv::Mat m_currentFrame;
     QByteArray m_faceFeature;

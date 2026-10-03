@@ -1,15 +1,17 @@
 QT       += core gui
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += core widgets sql concurrent network
+# mono：不依赖 D-Bus / Unix socket 收疲劳事件（本进程本地推理）
 qtHaveModule(dbus) {
     QT += dbus
     DEFINES += DMS_HAVE_QT_DBUS
-    message(HMI: Qt DBus enabled)
-} else {
-    warning(HMI: Qt DBus missing — fatigue UI via Unix socket)
 }
 
 CONFIG += c++11
+
+# mono 对照分支：单进程（HMI 自采 + 本地疲劳），不依赖 dms_capture/dms_ai/shm
+DEFINES += DMS_MONO
+message(HMI: DMS_MONO single-process build)
 
 # Product / binary name (same as folder and .pro)
 TARGET = SmartCockpitDMS
@@ -139,9 +141,12 @@ unix:!android {
     }
     equals(RK_ENABLE_SEETAFACE, 1) {
         DEFINES += FRAS_HAVE_SEETAFACE
+        # 单进程也在 HMI 内做 EyeState 闭眼
+        DEFINES += DMS_HAVE_EYE_STATE
         INCLUDEPATH += $$PWD/3rdparty/seetaface/include
         LIBS += -L$${RK_SEETAFACE_LIB} \
                 -lSeetaFaceAntiSpoofingX600 -lSeetaFaceLandmarker600 \
+                -lSeetaEyeStateDetector200 \
                 -ltennis -lSeetaAuthorize \
                 -Wl,-rpath,$${RK_SEETAFACE_LIB}
         message(SeetaFace Linux enabled: $${RK_SEETAFACE_LIB})

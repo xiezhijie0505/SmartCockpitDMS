@@ -1,49 +1,46 @@
 # SmartCockpitDMS
 
-基于 **RK3568** 的智能座舱驾驶员监测系统（DMS）：摄像头采集 → 共享内存传帧 → AI 疲劳推理 → HMI 预览与驾驶员识别。
+> 当前分支说明见文末：**`main` = 多进程 + shm**，**`mono` = 单进程无 shm**。
 
-## 功能概览
+基于 **RK3568** 的智能座舱驾驶员监测系统（DMS）。
+
+## 功能概览（本分支 `mono`）
 
 | 能力 | 说明 |
 |------|------|
-| 多进程架构 | `dms_capture` / `dms_ai` / `SmartCockpitDMS` 分离，崩溃可独立拉起 |
-| 帧传输 | POSIX 共享内存 + seqlock（最新帧，允许丢中间帧） |
-| 疲劳监测 | YOLOv8-Pose（低头）+ Seeta `EyeState`（睁/闭眼）；等级经 Unix socket 推 HMI |
+| 单进程 | 仅跑 `SmartCockpitDMS`：本进程开相机 + 本地疲劳推理 |
+| 无 shm | 不用 `dms_capture` / `dms_ai` / POSIX 共享内存 |
+| 疲劳监测 | HMI 内 YOLOv8-Pose（低头）+ Seeta `EyeState`（睁/闭眼） |
 | 驾驶员识别 | YuNet 检测 + SFace / RKNN 特征；可选 Seeta 静默活体 |
 | 告警 | 疲劳边沿触发语音（ALSA）与可选 CAN |
+
+多进程架构见 `main` 分支。
 
 ## 仓库结构
 
 ```
 SmartCockpitDMS/
-├── SmartCockpit.pro          # 三进程总工程（subdirs）
-├── dms_capture.pro           # 采集进程
-├── dms_ai.pro                # 推理进程
-├── SmartCockpitDMS.pro       # HMI
-├── apps/                     # dms_capture / dms_ai 入口
-├── src/                      # 公共源码（IPC、算法、界面、控制器）
+├── SmartCockpitDMS.pro       # 单进程 HMI（本分支主要编译目标）
+├── dms_capture.pro / dms_ai.pro  # 保留源码，mono 不依赖
+├── src/                      # 算法、界面、控制器（监控页自开相机）
 ├── scripts/rk3568/           # 交叉编译等脚本
-├── systemd/                  # 开机/看门狗脚本
 ├── models/                   # 模型（默认不进 Git，需自行放置）
 └── 3rdparty/                 # Seeta / RKNN 头文件等（.so 默认不进 Git）
 ```
 
-## 进程与数据流
+## 数据流（mono）
 
 ```
-摄像头(V4L2)
-    → dms_capture 写入 /dms_frame_shm
-        → dms_ai 读帧：Pose 低头 + EyeState 闭眼 → Unix socket 推送等级
-        → SmartCockpitDMS 读帧预览 + 人脸识别；收 socket 更新疲劳 UI
+摄像头 → SmartCockpitDMS（OpenCV 采集）
+           → 人脸识别确认驾驶员
+           → 本进程 Pose + EyeState → 疲劳 UI / 告警
 ```
-
-启动顺序建议：`dms_capture` → `dms_ai` → `SmartCockpitDMS`。
 
 ## 环境依赖
 
 - 交叉编译主机：Ubuntu + aarch64 工具链 + Qt（如 5.15.2 aarch64）+ OpenCV
 - 板端：RK3568、V4L2 摄像头、可选 RKNN Runtime / ALSA
-- 第三方：SeetaFace6（Landmarker + EyeState）、RKNN Model Zoo（yolov8_pose 源码，编译 `dms_ai` 时用）
+- 第三方：SeetaFace6（Landmarker + EyeState）、RKNN Model Zoo（yolov8_pose 源码，交叉编译 HMI 时链入）
 
 ## 模型文件（需自行下载，默认不提交）
 
@@ -61,7 +58,7 @@ SmartCockpitDMS/
 Seeta 模型包（含 `eye_state.csta`、`pts5` 等）见官方说明：  
 https://github.com/seetafaceengine/SeetaFace6
 
-## 交叉编译（Ubuntu）
+## 交叉编译（Ubuntu，mono 只编 HMI）
 
 ```bash
 cd /path/to/SmartCockpitDMS
@@ -69,28 +66,28 @@ export FATIGUE_HAVE_POSE=1
 export RKNN_MODEL_ZOO=$HOME/rknn_model_zoo
 export RK_ENABLE_SEETAFACE=1
 
-bash scripts/rk3568/build_three_apps.sh
+# 只需编 HMI（SmartCockpitDMS.pro 已 DEFINES+=DMS_MONO）
+qmake SmartCockpitDMS.pro && make -j$(nproc)
+# 或仍可用三进程脚本，板端只跑 ./SmartCockpitDMS 即可
 ```
 
-产物默认在 `~/rk-cross/SmartCockpitDMS/`（含可执行文件、`lib/`、`run_*.sh`）。
+产物建议拷到板上 `/root/SmartCockpitDMS/`（含可执行文件、`lib/`、`models/`）。
 
-## 板端运行
+## 板端运行（mono 单进程）
+
+只需跑 HMI（本进程开相机 + 本地疲劳）：
 
 ```sh
 cd /root/SmartCockpitDMS
 export LD_LIBRARY_PATH="/root/SmartCockpitDMS/lib:${LD_LIBRARY_PATH}"
-
-# 部署前请先停止旧进程 / 看门狗，再 scp 新文件
-./run_capture.sh &
-sleep 1
-./dms_ai models/rknn/yolov8_pose.rknn &
-sleep 1
-./run.sh &
-
-pidof dms_capture dms_ai SmartCockpitDMS
+export QT_QPA_PLATFORM=linuxfb
+# 或 ./run.sh
+./SmartCockpitDMS
 ```
 
-库目录 `lib/` 需包含 OpenCV、以及 EyeState 相关：
+**不需要** `dms_capture` / `dms_ai`。
+
+库目录 `lib/` 需包含 OpenCV、RKNN（若启用）、以及 EyeState 相关：
 
 - `libSeetaEyeStateDetector200.so`
 - `libSeetaFaceLandmarker600.so`
@@ -98,10 +95,23 @@ pidof dms_capture dms_ai SmartCockpitDMS
 
 ## 说明与边界
 
-- HMI（Linux）不本地跑 Pose；疲劳等级以 `dms_ai` 推送为准。
-- Pose 关键点置信度不能可靠表示「闭眼」，故闭眼使用 Seeta EyeState，而非单纯调 Pose 阈值。
+- **本分支（mono）**：单进程；HMI 自开相机，本地 Pose + EyeState。
+- **`main` 分支**：多进程 + shm；疲劳由 `dms_ai` 推送。
+- Pose 关键点置信度不能可靠表示「闭眼」，故闭眼使用 Seeta EyeState。
 - 活体用于驾驶员确认场景，与疲劳检测解耦。
 - `data/attendance.db` 等为历史命名，实际存驾驶员/设置数据。
+
+## 分支对照
+
+| 分支 | 含义 |
+|------|------|
+| `main` | 多进程：`dms_capture` + `dms_ai` + HMI + shm |
+| `mono` | 单进程：仅 HMI（对照实验用） |
+
+```bash
+git checkout main   # 多进程
+git checkout mono   # 单进程
+```
 
 ## License
 

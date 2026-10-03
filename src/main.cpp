@@ -42,7 +42,7 @@ int main(int argc, char *argv[])
     QApplication a(argc, argv);
     qRegisterMetaType<cv::Mat>("cv::Mat");
     a.setApplicationName(QStringLiteral("SmartCockpitDMS"));
-    a.setApplicationDisplayName(QStringLiteral("智能座舱 · 驾驶员监测"));
+    a.setApplicationDisplayName(QStringLiteral("智能座舱 · 驾驶员监测（单进程）"));
 
 #ifdef Q_OS_LINUX
     if (QTextCodec *utf8 = QTextCodec::codecForName("UTF-8")) {

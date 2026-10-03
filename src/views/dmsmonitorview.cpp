@@ -15,10 +15,8 @@
 #include <QCoreApplication>
 #include <cmath>
 #include <algorithm>
-#include "ipc/frame_shm_reader.h"
-#include "ipc/fatigue_level_rx.h"
 #include "ipc/fatigue_can_tx.h"
-// 疲劳主通道用 Unix socket（含低头/闭眼）。勿再订 D-Bus 仅 level 信号，以免冲掉 UI 细节。
+// mono 分支：单进程 HMI 自己开相机 + 本地 FatigueDetector（无 shm / dms_ai）
 
 namespace {
 void applyStatus(QLabel *label, const QString &status)
@@ -33,7 +31,6 @@ DmsMonitorView::DmsMonitorView(QWidget *parent)
     : QWidget(parent)
     , m_driverController(nullptr)
     , m_settingsController(nullptr)
-    , m_shmReader(new FrameShmReader())
     , m_timer(nullptr)
     , m_recognizeTimer(nullptr)
     , m_isCameraRunning(false)
@@ -48,22 +45,11 @@ DmsMonitorView::DmsMonitorView(QWidget *parent)
     , m_boxColor(0, 220, 0)
 {
     setupUI();
-    setupFatigueEventListener();
 }
 
 DmsMonitorView::~DmsMonitorView()
 {
     stopCamera();
-    if (m_fatigueSock) {
-        m_fatigueSock->stop();
-        delete m_fatigueSock;
-        m_fatigueSock = nullptr;
-    }
-    if (m_shmReader) {
-        m_shmReader->close();
-        delete m_shmReader;
-        m_shmReader = nullptr;
-    }
 }
 
 void DmsMonitorView::setupUI()
@@ -144,35 +130,17 @@ void DmsMonitorView::startCamera()
         return;
     }
 
-    if (m_shmReader) {
-        m_shmReader->close();
-    }
     if (m_cap.isOpened()) {
         m_cap.release();
     }
 
-#ifdef Q_OS_LINUX
-    // S4.2：不抢相机，只读 dms_capture 写入的 shm
-    if (!m_shmReader || !m_shmReader->open()) {
+    if (!openLocalCamera()) {
         QMessageBox::warning(
             this, QStringLiteral("错误"),
-            QStringLiteral("无法打开帧共享内存。\n请先启动 dms_capture。"));
+            QStringLiteral("无法打开摄像头，请检查摄像头连接"));
         return;
     }
-    qInfo() << QStringLiteral("【监控】已连接采集进程画面（共享内存）");
-#else
-    m_cap.open(m_cameraIndex);
-    if (!m_cap.isOpened()) {
-        QMessageBox::warning(this, "错误", "无法打开摄像头，请检查摄像头连接");
-        return;
-    }
-    m_cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
-    m_cap.set(cv::CAP_PROP_FRAME_WIDTH, 320);
-    m_cap.set(cv::CAP_PROP_FRAME_HEIGHT, 240);
-    m_cap.set(cv::CAP_PROP_FPS, 30);
-    m_cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
-    qDebug() << "[Camera] OpenCV opened index" << m_cameraIndex;
-#endif
+    qInfo() << QStringLiteral("【监控】单进程：本进程已打开摄像头 index=") << m_cameraIndex;
 
     if (!m_timer) {
         m_timer = new QTimer(this);
@@ -189,6 +157,7 @@ void DmsMonitorView::startCamera()
     m_hasFace = false;
     m_detectSkip = 0;
     m_faceMiss = 0;
+    m_fatigueSkip = 0;
     m_driverLocked = false;
     m_driverId = -1;
     m_driverName.clear();
@@ -198,7 +167,6 @@ void DmsMonitorView::startCamera()
         m_fatigueDetector->reset();
     }
     m_timer->start(33);
-    // 200ms 调度一次识别，首认更快
     m_recognizeTimer->start(200);
 
     m_isCameraRunning = true;
@@ -207,11 +175,38 @@ void DmsMonitorView::startCamera()
     if (m_driverLabel) {
         m_driverLabel->setText(QStringLiteral("当前驾驶员：识别中…请正对摄像头"));
     }
-    m_infoLabel->setText(QStringLiteral("监控已启动：先完成人脸识别，确认驾驶员后再做疲劳监测"));
+    m_infoLabel->setText(QStringLiteral("监控已启动（单进程）：识别司机后本地疲劳监测"));
     if (m_levelLabel) {
         m_levelLabel->setText(QStringLiteral("疲劳等级：等待确认驾驶员…"));
     }
     updateStatusLabel(QStringLiteral("监控运行中"), true);
+}
+
+bool DmsMonitorView::openLocalCamera()
+{
+    m_cap.open(m_cameraIndex);
+    if (!m_cap.isOpened()) {
+        const int fallbacks[] = {9, 10, 1, 2, 11, 0};
+        for (int idx : fallbacks) {
+            if (idx == m_cameraIndex) {
+                continue;
+            }
+            m_cap.open(idx);
+            if (m_cap.isOpened()) {
+                m_cameraIndex = idx;
+                break;
+            }
+        }
+    }
+    if (!m_cap.isOpened()) {
+        return false;
+    }
+    m_cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
+    m_cap.set(cv::CAP_PROP_FRAME_WIDTH, 320);
+    m_cap.set(cv::CAP_PROP_FRAME_HEIGHT, 240);
+    m_cap.set(cv::CAP_PROP_FPS, 30);
+    m_cap.set(cv::CAP_PROP_BUFFERSIZE, 1);
+    return true;
 }
 
 void DmsMonitorView::stopCamera()
@@ -223,9 +218,6 @@ void DmsMonitorView::stopCamera()
         QThread::msleep(20);
     }
 
-    if (m_shmReader) {
-        m_shmReader->close();
-    }
     if (m_cap.isOpened()) {
         m_cap.release();
     }
@@ -259,15 +251,6 @@ void DmsMonitorView::updateFrame()
 {
     cv::Mat frame;
 
-#ifdef Q_OS_LINUX
-    if (!m_shmReader) {
-        stopCamera();
-        return;
-    }
-    if (!m_shmReader->copyLatest(frame) || frame.empty()) {
-        return;   // 本拍没帧，不要 stop
-    }
-#else
     if (!m_cap.isOpened()) {
         stopCamera();
         return;
@@ -278,7 +261,6 @@ void DmsMonitorView::updateFrame()
             return;
         }
     }
-#endif
 
     m_currentFrame = frame;
 
@@ -393,6 +375,8 @@ void DmsMonitorView::updateFrame()
     }
     painter.end();
 
+    runFatigueIfNeeded();
+
     m_videoLabel->setPixmap(QPixmap::fromImage(canvas).scaled(
         m_videoLabel->size(), Qt::KeepAspectRatio, Qt::FastTransformation));
 }
@@ -433,28 +417,24 @@ void DmsMonitorView::setFatigueDetector(FatigueDetector *detector)
 {
     m_fatigueDetector = detector;
     if (m_levelLabel) {
-        m_levelLabel->setText(QStringLiteral("疲劳等级：等待 dms_ai 推送…"));
+        m_levelLabel->setText(QStringLiteral("疲劳等级：—（确认驾驶员后本进程监测）"));
     }
 }
 
-void DmsMonitorView::setupFatigueEventListener()
+void DmsMonitorView::runFatigueIfNeeded()
 {
-#ifdef Q_OS_LINUX
-    // 主通道：Unix socket（FatigueEvent = level + 低头 + 闭眼）
-    if (!m_fatigueSock) {
-        m_fatigueSock = new FatigueLevelSocketServer(this);
+    if (!m_driverLocked || !m_fatigueDetector || !m_fatigueDetector->isReady()) {
+        return;
     }
-    if (m_fatigueSock->start()) {
-        connect(m_fatigueSock, &FatigueLevelSocketServer::fatigueReceived,
-                this, &DmsMonitorView::onRemoteFatigueEvent, Qt::QueuedConnection);
+    if (m_currentFrame.empty()) {
+        return;
     }
-    // 故意不订 D-Bus FatigueLevelChanged：该信号只有 level，会把低头/闭眼刷成「否」
-#endif
-}
-
-void DmsMonitorView::onRemoteFatigueEvent(int level, int headDown, int eyeClosed)
-{
-    updateFatigueUi(level, headDown, eyeClosed);
+    // 约每 5 帧推理一次，减轻 CPU/NPU
+    if ((++m_fatigueSkip % 5) != 0) {
+        return;
+    }
+    const FatigueResult r = m_fatigueDetector->infer(m_currentFrame);
+    updateFatigueUi(r.level, r.headDown, r.eyeClosed);
 }
 
 void DmsMonitorView::updateFatigueUi(int level, int headDown, int eyeClosed)
@@ -479,34 +459,19 @@ void DmsMonitorView::updateFatigueUi(int level, int headDown, int eyeClosed)
     m_levelLabel->setStyleSheet(
         QStringLiteral("font-size:18px;font-weight:bold;color:%1;").arg(color));
 
-    static int s_lastHead = -1;
-    static int s_lastEye = -1;
-    if (level != m_lastFatigueLevel || headDown != s_lastHead || eyeClosed != s_lastEye) {
-        qInfo() << QStringLiteral("【疲劳】等级=%1 低头=%2 闭眼=%3")
-                       .arg(level)
-                       .arg(headDown ? QStringLiteral("是") : QStringLiteral("否"))
-                       .arg(eyeClosed ? QStringLiteral("是") : QStringLiteral("否"));
-        s_lastHead = headDown;
-        s_lastEye = eyeClosed;
-    }
-
-    // S2：正常 → 疲劳 边沿：语音（若喇叭可用）+ CAN 打 STM32 蜂鸣器
+    // 状态变化只更新 UI，不刷屏日志（便于单终端采 CPU/RSS）
     if (m_lastFatigueLevel == 0 && level >= 1) {
-        qInfo() << QStringLiteral("【疲劳】触发告警 level=%1").arg(level);
         if (m_alertPlayer) {
             m_alertPlayer->play();
         }
 #ifdef Q_OS_LINUX
-        // 网卡名按板子改：粤嵌多为 can1；没有则试 can0
         if (!sendFatigueCanToMcu(level, "can1")) {
             qWarning() << QStringLiteral("【疲劳】CAN 发送失败（检查 can1 是否 up、线是否接好）");
-        } else {
-            qInfo() << QStringLiteral("【疲劳】已发 CAN 0x210 → STM32");
         }
 #endif
     } else if (m_lastFatigueLevel >= 1 && level == 0) {
 #ifdef Q_OS_LINUX
-        sendFatigueCanToMcu(0, "can1");  // 停蜂鸣
+        sendFatigueCanToMcu(0, "can1");
 #endif
     }
     m_lastFatigueLevel = level;
@@ -523,13 +488,14 @@ void DmsMonitorView::onMatchSuccess(int id, const QString &name, const cv::Mat &
     if (m_driverLabel) {
         m_driverLabel->setText(QStringLiteral("当前驾驶员：%1 (ID:%2)").arg(name).arg(id));
     }
-    // Linux：疲劳由 dms_ai 推送，m_fatigueDetector 恒为 nullptr，不能靠它改文案
-    if (firstLock && m_levelLabel) {
+    if (firstLock) {
         if (m_fatigueDetector) {
             m_fatigueDetector->reset();
         }
-        m_levelLabel->setText(QStringLiteral("疲劳等级：监测中（等待 dms_ai）…"));
-        m_levelLabel->setStyleSheet(QStringLiteral("font-size:18px;font-weight:bold;color:#3498db;"));
+        if (m_levelLabel) {
+            m_levelLabel->setText(QStringLiteral("疲劳等级：监测中…"));
+            m_levelLabel->setStyleSheet(QStringLiteral("font-size:18px;font-weight:bold;color:#3498db;"));
+        }
     }
 
     m_infoLabel->setText(QStringLiteral("驾驶员已确认：%1 — 正在疲劳监测").arg(name));
@@ -546,7 +512,6 @@ void DmsMonitorView::onMatchHolding(int id, const QString &name)
     if (name.isEmpty()) {
         return;
     }
-    // 保持阶段也视为已确认司机（避免闪断）
     if (!m_driverLocked) {
         m_driverLocked = true;
         m_driverId = id;
@@ -558,7 +523,7 @@ void DmsMonitorView::onMatchHolding(int id, const QString &name)
             m_fatigueDetector->reset();
         }
         if (m_levelLabel) {
-            m_levelLabel->setText(QStringLiteral("疲劳等级：监测中（等待 dms_ai）…"));
+            m_levelLabel->setText(QStringLiteral("疲劳等级：监测中…"));
             m_levelLabel->setStyleSheet(QStringLiteral("font-size:18px;font-weight:bold;color:#3498db;"));
         }
     }

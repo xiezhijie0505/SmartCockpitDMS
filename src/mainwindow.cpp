@@ -90,9 +90,29 @@ void MainWindow::initSystem()
     }
 
 #ifdef Q_OS_LINUX
-    // S5：疲劳由 dms_ai 经 socket 推送，HMI 不再加载 pose（避免刷屏、加快启动）
-    m_fatigueDetector = nullptr;
-    qInfo() << QStringLiteral("【启动】疲劳监测：等待 dms_ai 推送（请先启动 dms_capture 与 dms_ai）");
+    // mono：HMI 本进程加载 Pose + EyeState（不依赖 dms_ai）
+    m_fatigueDetector = new FatigueDetector();
+    QString posePath = findDataFile({
+        "models/rknn/yolov8_pose.rknn",
+        "models/yolov8_pose.rknn",
+        "yolov8_pose.rknn"
+    });
+    if (!m_fatigueDetector->init(posePath)) {
+        qWarning() << QStringLiteral("【启动】Pose 加载失败（仍可注册/识别）") << posePath;
+    } else {
+        QString eyePath = findDataFile({
+            "models/eye_state.csta"
+        });
+        QString lm5Path = findDataFile({
+            "models/face_landmarker_mask_pts5.csta",
+            "3rdparty/seetaface/model/face_landmarker_mask_pts5.csta"
+        });
+        if (m_fatigueDetector->initEyeState(eyePath, lm5Path)) {
+            qInfo() << QStringLiteral("【启动】疲劳监测：单进程 Pose + EyeState");
+        } else {
+            qWarning() << QStringLiteral("【启动】EyeState 未就绪（仅低头可用）");
+        }
+    }
 #else
     m_fatigueDetector = new FatigueDetector();
     QString posePath = findDataFile({

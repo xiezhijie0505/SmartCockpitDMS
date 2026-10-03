@@ -258,17 +258,6 @@ int FatigueDetector::detectEyeClosedSeeta(const cv::Mat &bgr, const float kp[17]
     seeta::EyeStateDetector::EYE_STATE right = seeta::EyeStateDetector::EYE_UNKNOWN;
     esd->Detect(image, points.data(), left, right);
 
-    static int s_dbg = 0;
-    if ((++s_dbg % 12) == 0) {
-        const char *names[] = {"close", "open", "random", "unknown"};
-        const int li = static_cast<int>(left);
-        const int ri = static_cast<int>(right);
-        std::fprintf(stderr, "[fatigue] EyeState L=%s R=%s face=%d,%d %dx%d\n",
-                     (li >= 0 && li < 4) ? names[li] : "?",
-                     (ri >= 0 && ri < 4) ? names[ri] : "?",
-                     face.x, face.y, face.width, face.height);
-    }
-
     // 双眼都 CLOSE，或一只 CLOSE 且另一只不是明确 OPEN
     const bool lClose = (left == seeta::EyeStateDetector::EYE_CLOSE);
     const bool rClose = (right == seeta::EyeStateDetector::EYE_CLOSE);

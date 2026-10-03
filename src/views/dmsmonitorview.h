@@ -18,8 +18,6 @@ class SystemSettingsController;
 class FaceRecognizer;
 class FatigueDetector;
 class AlsaAlertPlayer;
-class FrameShmReader;
-class FatigueLevelSocketServer;
 
 class DmsMonitorView : public QWidget
 {
@@ -34,7 +32,7 @@ public:
     void startCamera();
     void stopCamera();
     void setFaceRecognizer(FaceRecognizer *recognizer);
-    // Linux 板端传 nullptr（疲劳由 dms_ai 推送）；Windows 可传本地 FatigueDetector 调试
+    // 单进程：传本地 FatigueDetector；确认驾驶员后在预览线程里 infer
     void setFatigueDetector(FatigueDetector *detector);
 
 private slots:
@@ -43,13 +41,13 @@ private slots:
     void onMatchFailed(const QString &reason);
     void updateFrame();
     void processRecognize();
-    void onRemoteFatigueEvent(int level, int headDown, int eyeClosed);
 
 private:
     void setupUI();
-    void setupFatigueEventListener();
     void updateStatusLabel(const QString &text, bool isSuccess = true);
     void updateFatigueUi(int level, int headDown, int eyeClosed);
+    void runFatigueIfNeeded();
+    bool openLocalCamera();
 
     QLabel *m_videoLabel;
     QLabel *m_levelLabel = nullptr;
@@ -62,8 +60,7 @@ private:
     DriverIdentifyController *m_driverController;
     SystemSettingsController *m_settingsController;
 
-    // Linux：读 dms_capture 的 POSIX shm；Windows：走下面 OpenCV m_cap
-    FrameShmReader *m_shmReader = nullptr;
+    // 单进程：本进程 OpenCV 开相机（无 dms_capture / shm）
     cv::VideoCapture m_cap;
     QTimer *m_timer;
     QTimer *m_recognizeTimer;
@@ -80,6 +77,7 @@ private:
     FatigueDetector *m_fatigueDetector = nullptr;
     AlsaAlertPlayer *m_alertPlayer = nullptr;
     int m_lastFatigueLevel = 0;
+    int m_fatigueSkip = 0;
 
     bool m_driverLocked = false;
     QString m_driverName;
@@ -96,9 +94,6 @@ private:
     QString m_overlayName;
     QColor m_boxColor;
     QElapsedTimer m_matchHighlight;
-
-    // Unix socket 收 dms_ai 的 FatigueEvent（含 level/低头/闭眼）
-    FatigueLevelSocketServer *m_fatigueSock = nullptr;
 };
 
 #endif // DMSMONITORVIEW_H

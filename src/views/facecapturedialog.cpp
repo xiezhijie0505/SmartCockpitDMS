@@ -1,6 +1,5 @@
 #include "facecapturedialog.h"
 #include "algorithms/facerecognizer.h"
-#include "ipc/frame_shm_reader.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -13,7 +12,6 @@ FaceCaptureDialog::FaceCaptureDialog(FaceRecognizer *recognizer, int cameraIndex
     : QDialog(parent)
     , m_recognizer(recognizer)
     , m_cameraIndex(cameraIndex)
-    , m_shmReader(new FrameShmReader())
 {
     setModal(true);
     setWindowTitle(tr("摄像头采集人脸"));
@@ -61,9 +59,7 @@ FaceCaptureDialog::FaceCaptureDialog(FaceRecognizer *recognizer, int cameraIndex
 
     if (!openCamera()) {
         QMessageBox::warning(this, tr("错误"),
-                             tr("无法打开画面。\n"
-                                "Linux 请先启动 dms_capture（读共享内存）；\n"
-                                "或确认本机摄像头未被占用。"));
+                             tr("无法打开摄像头，请确认设备未被占用。"));
         QTimer::singleShot(0, this, &QDialog::reject);
         return;
     }
@@ -75,21 +71,10 @@ FaceCaptureDialog::FaceCaptureDialog(FaceRecognizer *recognizer, int cameraIndex
 FaceCaptureDialog::~FaceCaptureDialog()
 {
     closeCamera();
-    delete m_shmReader;
-    m_shmReader = nullptr;
 }
 
 bool FaceCaptureDialog::openCamera()
 {
-#ifdef Q_OS_LINUX
-    // S4.2：与监控页一致，读 dms_capture 的 shm，不抢 V4L2
-    if (m_shmReader && m_shmReader->open()) {
-        m_useShm = true;
-        return true;
-    }
-    m_useShm = false;
-#endif
-
     if (m_cap.isOpened()) {
         m_cap.release();
     }
@@ -125,12 +110,6 @@ void FaceCaptureDialog::closeCamera()
     if (m_timer) {
         m_timer->stop();
     }
-#ifdef Q_OS_LINUX
-    if (m_shmReader) {
-        m_shmReader->close();
-    }
-    m_useShm = false;
-#endif
     if (m_cap.isOpened()) {
         m_cap.release();
     }
@@ -139,22 +118,13 @@ void FaceCaptureDialog::closeCamera()
 void FaceCaptureDialog::onUpdateFrame()
 {
     cv::Mat frame;
-#ifdef Q_OS_LINUX
-    if (m_useShm) {
-        if (!m_shmReader || !m_shmReader->copyLatest(frame) || frame.empty()) {
+    if (!m_cap.isOpened()) {
+        return;
+    }
+    m_cap.grab();
+    if (!m_cap.retrieve(frame) || frame.empty()) {
+        if (!m_cap.read(frame) || frame.empty()) {
             return;
-        }
-    } else
-#endif
-    {
-        if (!m_cap.isOpened()) {
-            return;
-        }
-        m_cap.grab();
-        if (!m_cap.retrieve(frame) || frame.empty()) {
-            if (!m_cap.read(frame) || frame.empty()) {
-                return;
-            }
         }
     }
 
